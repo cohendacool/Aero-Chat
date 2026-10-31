@@ -70,7 +70,8 @@ function getUsers() {
                 : "AeroUser",
             secretKey: secretKey,
             addedContacts: Array.isArray(user.addedContacts) ? user.addedContacts : [],
-            messages: messages
+            messages: messages,
+            pushSubscription: user.pushSubscription
         };
     });
 
@@ -123,6 +124,13 @@ function hasValidKey(user, req) {
 
 function findUser(users, userId) {
     return users.find(user => user.userId === userId);
+}
+
+function sendPush(target, title, body) {
+    if (!target.pushSubscription) return;
+
+    webpush.sendNotification(target.pushSubscription, JSON.stringify({ title: title, body: body }))
+    .catch(err => console.error("Push error:", err.statusCode, err.body));
 }
 
 function formatUserResponse(user, users) {
@@ -327,12 +335,7 @@ app.post("/user/:userId/messages", (req, res) => {
         messages: user.messages[contactId]
     });
 
-    if (contact.pushSubscription) {
-        webpush.sendNotification(contact.pushSubscription, JSON.stringify({
-            title: `New message from ${user.username}`,
-            body: text
-        })).catchall(err => console.error("Push error:", err));
-    }
+    sendPush(contact, `New message from ${user.username}`, text);
 });
 
 // Create a group chat
@@ -370,6 +373,9 @@ app.post("/user/:userId/groups", (req, res) => {
     });
 
     saveGroups(groups);
+    group.members
+    .filter(id => id !== user.userId)
+    .forEach(id => sendPush(findUser(users, id), `${group.name}: ${user.username}`, text));
 
     res.status(201).json(formatUserResponse(user, users));
 });
@@ -414,8 +420,27 @@ app.post("/user/:userId/groups/:groupId/messages", (req, res) => {
     res.status(201).json({ messages: group.messages });
 });
 
-app.get("/", (req, res) => {
-    res.json({ status: "Aero Games chat backend is running!" });
+// Receive message notifications
+app.post("/user/:userId/subscribe", (req, res) => {
+    const users = getUsers();
+    const user = findUser(users, req.params.userId);
+
+    if (!user) {
+        return res.status(404).json({ error: "User not found." });
+    }
+
+    if (!hasValidKey(user, req)) {
+        return res.status(401).json({ error: "Invalid secret key." });
+    }
+
+    user.pushSubscription = req.body.subscription;
+    saveUsers(users);
+
+    res.json({ status: "Subscribed." });
+    });
+
+    app.get("/", (req, res) => {
+        res.json({ status: "Aero Games chat backend is running!" });
 });
 
 app.listen(port, () => {
